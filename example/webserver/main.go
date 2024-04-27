@@ -12,7 +12,7 @@ import (
 func main() {
 	svc := NewService()
 
-	runner.Run(svc, runner.WithValue("port", 8080))
+	runner.Run(svc, runner.WithValue("port", 8080) /*, runner.WithShutdownTimeout(20*time.Nanosecond)*/)
 }
 
 type Service struct {
@@ -34,12 +34,21 @@ func (s *Service) Run(ctx context.Context) error {
 	return s.api.Run(fmt.Sprintf(":%d", port))
 }
 
-func (s *Service) Shutdown() error {
+func (s *Service) Shutdown(ctx context.Context) error {
 	log.Println("server shutdown requested")
-	err := s.api.Shutdown()
-	log.Println("server shutdown")
+	errChan := make(chan error)
 
-	return err
+	go func() {
+		errChan <- s.api.Shutdown()
+		log.Println("server shutdown normally")
+	}()
+
+	go func() {
+		<-ctx.Done()
+		errChan <- ctx.Err()
+	}()
+
+	return <-errChan
 }
 
 type API struct {
@@ -75,7 +84,7 @@ func (a *API) Shutdown() error {
 }
 
 func (a *API) handler(w http.ResponseWriter, _ *http.Request) {
-	n, err := fmt.Fprint(w, "Hello, this is a simple web server!")
+	n, err := fmt.Fprint(w, "Hello, this is a simple web server!\n")
 	if err != nil {
 		log.Printf("response write error: %s\n", err.Error())
 	}

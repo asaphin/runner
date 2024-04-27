@@ -10,9 +10,17 @@ import (
 	"time"
 )
 
-var timeoutSet bool
-var cancel context.CancelFunc
-var shutdownCalled bool
+var (
+	runningTimeoutSet  bool
+	shutdownCalled     bool
+	shutdownTimeoutSet bool
+	shutdownTimeout    time.Duration
+)
+
+var (
+	cancelRun      context.CancelFunc
+	cancelShutdown context.CancelFunc
+)
 
 // Service defines the interface for services that can be gracefully started and stopped.
 type Service interface {
@@ -21,7 +29,7 @@ type Service interface {
 
 	// Shutdown stops the service gracefully. It should wait for any ongoing operations
 	// to finish before returning.
-	Shutdown() error
+	Shutdown(ctx context.Context) error
 }
 
 type Option func(ctx context.Context) context.Context
@@ -30,7 +38,7 @@ func WithValue(key string, value interface{}) Option {
 	return func(ctx context.Context) context.Context { return context.WithValue(ctx, key, value) }
 }
 
-func WithValues(key string, values map[string]interface{}) Option {
+func WithValues(values map[string]interface{}) Option {
 	return func(ctx context.Context) context.Context {
 		for k, v := range values {
 			ctx = context.WithValue(ctx, k, v)
@@ -40,22 +48,42 @@ func WithValues(key string, values map[string]interface{}) Option {
 	}
 }
 
-func WithTimeout(timeout time.Duration) Option {
-	timeoutSet = true
+func GetValueFromContext[T any](ctx context.Context, key string) (T, bool) {
+	value, ok := ctx.Value(key).(T)
+
+	return value, ok
+}
+
+func WithRunTimeout(timeout time.Duration) Option {
+	runningTimeoutSet = true
 
 	return func(ctx context.Context) context.Context {
-		ctx, cancel = context.WithTimeout(ctx, timeout)
+		ctx, cancelRun = context.WithTimeout(ctx, timeout)
+
+		return ctx
+	}
+}
+
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(ctx context.Context) context.Context {
+		shutdownTimeoutSet = true
+		shutdownTimeout = timeout
 
 		return ctx
 	}
 }
 
 func Run(svc Service, opts ...Option) {
-	ctx := context.Background()
-	ctx, cancel = context.WithCancel(ctx)
+	runCtx := context.Background()
+	runCtx, cancelRun = context.WithCancel(runCtx)
 
 	for _, opt := range opts {
-		ctx = opt(ctx)
+		runCtx = opt(runCtx)
+	}
+
+	shutdownCtx := context.Background()
+	if shutdownTimeoutSet {
+		shutdownCtx, cancelShutdown = context.WithTimeout(shutdownCtx, shutdownTimeout)
 	}
 
 	shutdownSync := sync.Once{}
@@ -64,20 +92,20 @@ func Run(svc Service, opts ...Option) {
 	shutdown := func() {
 		shutdownSync.Do(func() {
 			shutdownCalled = true
-			shutdownErr := svc.Shutdown()
+			shutdownErr := svc.Shutdown(shutdownCtx)
 			if shutdownErr != nil {
 				defer os.Exit(1)
 				log.Printf("service shutdown error: %s\n", shutdownErr.Error())
 			}
 
-			cancel()
+			cancelRun()
 			shutdownComplete <- struct{}{}
 		})
 	}
 
-	if timeoutSet {
+	if runningTimeoutSet {
 		go func() {
-			<-ctx.Done()
+			<-runCtx.Done()
 			log.Printf("timeout exceeded")
 
 			shutdown()
@@ -100,7 +128,7 @@ func Run(svc Service, opts ...Option) {
 		os.Exit(0)
 	}()
 
-	err := svc.Run(ctx)
+	err := svc.Run(runCtx)
 	if err != nil && !shutdownCalled {
 		log.Printf("service run error: %s\n", err.Error())
 		shutdown()

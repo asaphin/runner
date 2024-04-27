@@ -10,7 +10,7 @@ import (
 func main() {
 	svc := NewEchoService("I'm running", time.Second)
 
-	runner.Run(svc, runner.WithTimeout(5*time.Second))
+	runner.Run(svc, runner.WithRunTimeout(5*time.Second), runner.WithShutdownTimeout(500*time.Millisecond))
 }
 
 type EchoService struct {
@@ -20,11 +20,6 @@ type EchoService struct {
 }
 
 func (s *EchoService) Run(_ context.Context) error { // Use context if necessary
-	//defer func() {
-	//	close(s.shutdownChan)
-	//	s.shutdownChan = nil
-	//}()
-
 	defer log.Println("service stopped")
 
 	for {
@@ -41,20 +36,32 @@ func (s *EchoService) Run(_ context.Context) error { // Use context if necessary
 	}
 }
 
-func (s *EchoService) Shutdown() error {
+func (s *EchoService) Shutdown(ctx context.Context) error {
 	log.Println("service Shutdown() method called")
 
-	// Put shutdown actions here
-	time.Sleep(500 * time.Millisecond)
-	log.Println("service shutdown actions completed")
+	var errChan = make(chan error)
 
-	//if s.shutdownChan != nil {
-	//	log.Println("shutdown channel is open")
-	s.shutdownChan <- struct{}{}
-	log.Println("service shutdown signal sent")
-	//}
+	go func() {
+		<-ctx.Done()
+		log.Println("shutdown context done")
+		s.shutdownChan <- struct{}{}
+		log.Println("service shutdown signal sent")
+		errChan <- ctx.Err()
+	}()
 
-	return nil
+	go func() {
+		// Put shutdown actions here
+		time.Sleep(1000 * time.Millisecond)
+		log.Println("service shutdown actions completed")
+
+		//if s.shutdownChan != nil {
+		//	log.Println("shutdown channel is open")
+		s.shutdownChan <- struct{}{}
+		log.Println("service shutdown signal sent")
+		errChan <- nil
+	}()
+
+	return <-errChan
 }
 
 func NewEchoService(message string, period time.Duration) *EchoService {
