@@ -135,7 +135,13 @@ func Run(svc Service, opts ...Option) {
 		log.Println("service shutdown")
 
 		os.Exit(1)
-	}
+	} else if shutdownCalled {
+		if err != nil {
+			log.Printf("service run error after shutdown call: %s\n", err.Error())
+		}
 
-	<-shutdownComplete
+		<-shutdownComplete
+
+		log.Println("service shutdown")
+	}
 }
